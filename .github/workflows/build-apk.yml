@@ -1,0 +1,534 @@
+name: Build FOTOBOX APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Create FOTOBOX project
+        run: |
+          mkdir -p app/src/main/java/com/fotobox/app
+          mkdir -p app/src/main/assets
+          mkdir -p app/src/main/res/values
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "FOTOBOX"
+          include(":app")
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.7.3' apply false
+          }
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.fotobox.app'
+              compileSdk 35
+
+              defaultConfig {
+                  applicationId 'com.fotobox.app'
+                  minSdk 26
+                  targetSdk 35
+                  versionCode 3
+                  versionName '0.3'
+              }
+          }
+          EOF
+
+          cat > app/src/main/res/values/styles.xml <<'EOF'
+          <resources>
+              <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
+                  <item name="android:fontFamily">sans</item>
+                  <item name="android:colorAccent">#2F8CFF</item>
+                  <item name="android:navigationBarColor">#061019</item>
+                  <item name="android:statusBarColor">#07111C</item>
+              </style>
+          </resources>
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <queries>
+                  <intent>
+                      <action android:name="android.media.action.IMAGE_CAPTURE"/>
+                  </intent>
+              </queries>
+
+              <application
+                  android:label="FOTOBOX"
+                  android:theme="@style/AppTheme">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:screenOrientation="portrait"
+                      android:exported="true">
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/java/com/fotobox/app/MainActivity.java <<'EOF'
+          package com.fotobox.app;
+
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.content.Intent;
+          import android.content.ClipData;
+          import android.content.ContentValues;
+          import android.database.Cursor;
+          import android.graphics.Bitmap;
+          import android.graphics.BitmapFactory;
+          import android.net.Uri;
+          import android.provider.MediaStore;
+          import android.util.Base64;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.widget.Toast;
+
+          import java.io.ByteArrayOutputStream;
+          import java.io.InputStream;
+
+          public class MainActivity extends Activity {
+
+              private static final int REQ_GALLERY = 1001;
+              private static final int REQ_CAMERA = 1002;
+
+              private WebView web;
+              private Uri cameraUri;
+
+              @Override
+              public void onCreate(Bundle b) {
+                  super.onCreate(b);
+
+                  web = new WebView(this);
+                  setContentView(web);
+
+                  WebSettings s = web.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);
+
+                  web.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                          if (url.startsWith("fotobox://gallery")) {
+                              openGallery();
+                              return true;
+                          }
+
+                          if (url.startsWith("fotobox://camera")) {
+                              openCamera();
+                              return true;
+                          }
+
+                          return false;
+                      }
+                  });
+
+                  web.loadUrl("file:///android_asset/index.html");
+              }
+
+              private void openGallery() {
+                  Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                  i.addCategory(Intent.CATEGORY_OPENABLE);
+                  i.setType("image/*");
+                  i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                  startActivityForResult(i, REQ_GALLERY);
+              }
+
+              private void openCamera() {
+                  try {
+                      ContentValues values = new ContentValues();
+                      values.put(MediaStore.Images.Media.DISPLAY_NAME,
+                              "FOTOBOX_" + System.currentTimeMillis() + ".jpg");
+                      values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+
+                      cameraUri = getContentResolver().insert(
+                              MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                              values
+                      );
+
+                      Intent i = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+
+                      if (cameraUri != null) {
+                          i.putExtra(MediaStore.EXTRA_OUTPUT, cameraUri);
+                      }
+
+                      startActivityForResult(i, REQ_CAMERA);
+
+                  } catch (Exception e) {
+                      Toast.makeText(this,
+                              "Fotoaparát se nepodařilo otevřít",
+                              Toast.LENGTH_LONG).show();
+                  }
+              }
+
+              @Override
+              protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+                  super.onActivityResult(requestCode, resultCode, data);
+
+                  if (resultCode != RESULT_OK) return;
+
+                  if (requestCode == REQ_CAMERA && cameraUri != null) {
+                      sendPhoto(cameraUri, "Nová fotografie");
+                      cameraUri = null;
+                      return;
+                  }
+
+                  if (requestCode == REQ_GALLERY && data != null) {
+
+                      ClipData clips = data.getClipData();
+
+                      if (clips != null) {
+
+                          for (int i = 0; i < clips.getItemCount(); i++) {
+                              Uri u = clips.getItemAt(i).getUri();
+                              sendPhoto(u, "Fotografie");
+                          }
+
+                      } else if (data.getData() != null) {
+
+                          sendPhoto(data.getData(), "Fotografie");
+                      }
+                  }
+              }
+
+              private void sendPhoto(Uri uri, String title) {
+                  try {
+
+                      InputStream in = getContentResolver().openInputStream(uri);
+                      Bitmap bmp = BitmapFactory.decodeStream(in);
+
+                      if (in != null) in.close();
+                      if (bmp == null) return;
+
+                      int max = 1600;
+                      int w = bmp.getWidth();
+                      int h = bmp.getHeight();
+
+                      Bitmap out = bmp;
+
+                      if (Math.max(w, h) > max) {
+                          float k = max / (float)Math.max(w, h);
+                          out = Bitmap.createScaledBitmap(
+                                  bmp,
+                                  Math.round(w * k),
+                                  Math.round(h * k),
+                                  true
+                          );
+                      }
+
+                      ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                      out.compress(Bitmap.CompressFormat.JPEG, 82, bytes);
+
+                      String base64 = Base64.encodeToString(
+                              bytes.toByteArray(),
+                              Base64.NO_WRAP
+                      );
+
+                      final String photo =
+                              "data:image/jpeg;base64," + base64;
+
+                      web.post(() ->
+                              web.evaluateJavascript(
+                                      "addPhoto('" + photo + "')",
+                                      null
+                              )
+                      );
+
+                  } catch (Exception e) {
+
+                      Toast.makeText(
+                              this,
+                              "Fotografii se nepodařilo načíst",
+                              Toast.LENGTH_LONG
+                      ).show();
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/assets/index.html <<'EOF'
+          <!DOCTYPE html>
+          <html lang="cs">
+          <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1">
+          <title>FOTOBOX</title>
+
+          <style>
+          *{box-sizing:border-box}
+          body{
+            margin:0;
+            background:#07111c;
+            color:white;
+            font-family:Arial,sans-serif;
+          }
+
+          header{
+            padding:22px;
+            display:flex;
+            align-items:center;
+            gap:14px;
+          }
+
+          #logo{
+            width:60px;
+            height:60px;
+            border-radius:18px;
+            overflow:hidden;
+            background:#1686ff;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            font-size:28px;
+          }
+
+          #logo img{
+            width:100%;
+            height:100%;
+            object-fit:cover;
+          }
+
+          h1{
+            margin:0;
+            font-size:28px;
+          }
+
+          .sub{
+            color:#8fa6ba;
+            font-size:13px;
+          }
+
+          .actions{
+            display:grid;
+            grid-template-columns:1fr 1fr;
+            gap:12px;
+            padding:10px 20px 22px;
+          }
+
+          button{
+            border:0;
+            border-radius:16px;
+            padding:18px 10px;
+            font-size:17px;
+            font-weight:bold;
+          }
+
+          .camera{
+            background:#2f8cff;
+            color:white;
+          }
+
+          .gallery{
+            background:#172635;
+            color:white;
+          }
+
+          .section{
+            padding:0 20px 10px;
+            font-weight:bold;
+            font-size:19px;
+          }
+
+          #grid{
+            padding:10px;
+            display:grid;
+            grid-template-columns:repeat(3,1fr);
+            gap:6px;
+          }
+
+          .photo{
+            position:relative;
+            aspect-ratio:1;
+          }
+
+          .photo img{
+            width:100%;
+            height:100%;
+            object-fit:cover;
+            border-radius:11px;
+          }
+
+          .heart{
+            position:absolute;
+            right:5px;
+            bottom:5px;
+            background:#0009;
+            color:white;
+            border-radius:50%;
+            width:34px;
+            height:34px;
+            padding:0;
+          }
+
+          .heart.on{
+            color:#ff4e71;
+          }
+          </style>
+          </head>
+
+          <body>
+
+          <header>
+            <div id="logo">📷</div>
+            <div>
+              <h1>FOTOBOX</h1>
+              <div class="sub">Fotky. Přehledně. Chytře.</div>
+            </div>
+          </header>
+
+          <div class="actions">
+            <button class="camera"
+              onclick="location.href='fotobox://camera'">
+              📷 Foťák
+            </button>
+
+            <button class="gallery"
+              onclick="location.href='fotobox://gallery'">
+              🖼 Galerie
+            </button>
+          </div>
+
+          <div class="section">Moje fotografie</div>
+
+          <div id="grid"></div>
+
+          <script>
+          let photos =
+              JSON.parse(localStorage.getItem("fotoboxPhotos") || "[]");
+
+          function save(){
+            localStorage.setItem(
+              "fotoboxPhotos",
+              JSON.stringify(photos)
+            );
+          }
+
+          function addPhoto(src){
+            photos.unshift({
+              src:src,
+              favorite:false
+            });
+
+            save();
+            render();
+          }
+
+          function favorite(i){
+            photos[i].favorite = !photos[i].favorite;
+            save();
+            render();
+          }
+
+          function render(){
+            const grid = document.getElementById("grid");
+
+            grid.innerHTML =
+              photos.map((p,i)=>`
+                <div class="photo">
+                  <img src="${p.src}">
+                  <button
+                    class="heart ${p.favorite ? 'on' : ''}"
+                    onclick="favorite(${i})">
+                    ♥
+                  </button>
+                </div>
+              `).join("");
+
+            const fav = photos.filter(p=>p.favorite);
+
+            const logo = document.getElementById("logo");
+
+            if(fav.length){
+              logo.innerHTML =
+                '<img src="'+fav[0].src+'">';
+            }else{
+              logo.innerHTML = '📷';
+            }
+          }
+
+          render();
+
+          setInterval(()=>{
+            const fav = photos.filter(p=>p.favorite);
+
+            if(!fav.length) return;
+
+            const logo =
+              document.getElementById("logo");
+
+            const p =
+              fav[Math.floor(Math.random()*fav.length)];
+
+            logo.innerHTML =
+              '<img src="'+p.src+'">';
+
+          },5000);
+          </script>
+
+          </body>
+          </html>
+          EOF
+
+      - name: Build APK
+        run: gradle assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: FOTOBOX-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
